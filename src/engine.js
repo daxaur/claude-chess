@@ -1,15 +1,24 @@
 import { aiMove } from 'js-chess-engine';
+import { DIFFICULTIES } from './theme.js';
 
-// Map our UI difficulty (1..5) to js-chess-engine depth (0..4).
-const LEVEL_MAP = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4 };
-
-// Given a chess.js-style Chess instance and a difficulty (1..5),
-// return the engine's move as a { from, to } pair in lowercase
-// algebraic (e.g. { from: 'e2', to: 'e4' }).
+// Given a chess.js Chess instance and a UI difficulty (1..5), return the
+// engine's chosen move in chess.js form: { from, to } in lowercase algebraic.
 export function think(chess, difficulty) {
-  const level = LEVEL_MAP[difficulty] ?? 2;
+  const entry = DIFFICULTIES[Math.max(0, Math.min(DIFFICULTIES.length - 1, difficulty - 1))];
   const fen = chess.fen();
-  const raw = aiMove(fen, level);          // { 'E2': 'E4' }
+  const raw = aiMove(fen, entry.depth);
   const [from, to] = Object.entries(raw)[0];
   return { from: from.toLowerCase(), to: to.toLowerCase() };
+}
+
+// Kick the engine off on a worker-ish timer so the UI can render the
+// "thinking…" spinner while we compute. js-chess-engine is synchronous, so
+// we just wrap the call in a Promise that yields control first.
+export function thinkAsync(chess, difficulty) {
+  return new Promise((resolve, reject) => {
+    setImmediate(() => {
+      try { resolve(think(chess, difficulty)); }
+      catch (err) { reject(err); }
+    });
+  });
 }
