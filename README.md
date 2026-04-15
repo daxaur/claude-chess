@@ -66,13 +66,30 @@ Then inside Claude Code, run:
 /chess
 ```
 
-The slash command opens a fresh Terminal window running the game, so it never takes over your Claude Code session.
+### How the integration actually works
 
-### Why a new window instead of the same terminal?
+A TTY can only have one program in raw mode at a time — Claude Code is already that program. So the plugin uses **tmux** as a shared-surface mechanism: `/chess` shells out to `claude-chess-launch`, which calls `tmux split-window` to create a sibling pane and starts the game there. You end up with Claude Code on one side and the chess board on the other, both visible in the same terminal window.
 
-A TTY can only have one raw-mode consumer at a time, and Claude Code is already that consumer. A true in-place takeover would require forking Claude Code itself. Spawning a sibling Terminal is the pragmatic alternative — you alt-tab between the two, and because every move auto-saves, you can leave the chess window at any point and resume later.
+```
+ ┌──────────────── tmux window ────────────────┬──────────────────────┐
+ │  $ claude                                   │  ✦  C L A U D E …    │
+ │    ▸ edits src/game.ts                      │                      │
+ │    ▸ running tests…                         │    a  b  c  d  e …   │
+ │                                             │ 8  ♜  ♞  ♝  ♛  ♚ …   │
+ │  (Claude Code pane)                         │  (claude-chess pane) │
+ └─────────────────────────────────────────────┴──────────────────────┘
+```
 
-On Linux/Windows (no `osascript`), the slash command prints instructions to run `claude-chess` in any terminal of your choice; the game is otherwise identical.
+Switch focus with `ctrl-b ←/→`, zoom a pane with `ctrl-b z`.
+
+**If you're not inside tmux**, the launcher gracefully falls back:
+
+- **macOS**: opens a new Terminal.app window running chess (`osascript`).
+- **Linux / Windows / everywhere else**: prints instructions to run `claude-chess` yourself in a second terminal.
+
+### Why tmux and not a real in-process integration?
+
+I researched the plugin surface properly — slash commands, skills, hooks, MCP servers, LSP, `bin/`, `settings.json`. None of them can render a custom UI or read keypresses; hooks explicitly document that they're [not connected to a TTY](https://code.claude.com/docs/en/hooks). True "inside Claude Code's own render tree" would require forking Claude Code (it's open source). Tmux is the best compromise that's actually shippable today.
 
 ## Controls
 
