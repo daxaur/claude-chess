@@ -60,9 +60,11 @@ export const DIFFICULTIES = [
   { depth: 4, label: 'Grandmaster', hint: 'Strongest setting. Good luck.'     },
 ];
 
-// Square size in terminal cells: 5 wide × 2 tall.
+// Square size in terminal cells. A wider/taller square makes pieces feel
+// weighty — with 5×3 the cells also read closer to square, since most
+// terminal fonts are roughly 2:1 tall:wide per cell.
 export const SQ_W = 5;
-export const SQ_H = 2;
+export const SQ_H = 3;
 
 // ANSI helpers.
 export const CLEAR  = '\u001b[2J\u001b[H';
