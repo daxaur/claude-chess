@@ -35,7 +35,7 @@ export async function selectDifficulty(defaultLevel = 3) {
     }
     lines.push('\n');
     lines.push(centered(cols, chalk.hex(C.muted)(
-      '↑ ↓  choose   ·   1–5  jump   ·   ↵  start   ·   esc  back'
+      '↑ ↓  choose   ·   1–5  jump   ·   ↵  start   ·   esc  back   ·   ?  help'
     )) + '\n');
     process.stdout.write(lines.join(''));
   };

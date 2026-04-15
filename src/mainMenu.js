@@ -87,7 +87,7 @@ export async function mainMenu(store) {
       for (const r of drawOptions(cols, items, idx)) rows.push(r);
       rows.push('');
       rows.push(centered(cols,
-        chalk.hex(C.muted)('↑ ↓  choose   ·   ↵  select   ·   q  quit')
+        chalk.hex(C.muted)('↑ ↓  choose   ·   ↵  select   ·   ?  help   ·   q  quit')
       ));
 
       // Push it into roughly the middle third of the screen.

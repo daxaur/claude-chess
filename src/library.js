@@ -114,7 +114,7 @@ export async function libraryScreen(store) {
 
       lines.push('\n');
       lines.push(centered(cols, chalk.hex(C.muted)(
-        '↑ ↓  select   ·   ↵  open   ·   d  delete   ·   esc  back'
+        '↑ ↓  select   ·   ↵  open   ·   d  delete   ·   esc  back   ·   ?  help'
       )) + '\n');
       process.stdout.write(lines.join(''));
     };
