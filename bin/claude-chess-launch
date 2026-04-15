@@ -1,27 +1,31 @@
 #!/usr/bin/env bash
-# Smart launcher for claude-chess. Chooses the best surface for the game:
+# Smart launcher for claude-chess. Picks the best surface for the game:
 #
-#   1. If we're inside a tmux session -> split the current pane horizontally
-#      and run chess in the new pane. This is the integration the Claude Code
-#      plugin is built around: both Claude Code and chess stay visible in
-#      the same terminal window.
+#   1. Already inside tmux  -> split the current pane. Claude Code stays on
+#      one side, chess on the other. This is the marquee experience.
 #
-#   2. If we're on macOS without tmux -> open a new Terminal.app window.
+#   2. macOS, tmux available -> open a new Terminal.app window and start a
+#      fresh tmux session there. If `claude` is on PATH we pre-seed that
+#      session with Claude Code on the left and chess on the right, so the
+#      user gets the same side-by-side even though they weren't in tmux
+#      when they typed /chess.
 #
-#   3. Otherwise -> print a short message explaining how to start the game
-#      manually. Chess can't take over a non-TTY subprocess (e.g. the Bash
-#      tool inside Claude Code), so we refuse to try.
+#   3. macOS, no tmux        -> open a new Terminal.app window running
+#      chess directly. Weakest path; we prompt the user to install tmux.
 #
-# The script is intentionally small and side-effect-only; it prints a single
-# status line so Claude Code has something to echo back to the user.
+#   4. Linux/Other with tmux -> start a detached tmux session and print
+#      the attach command. We don't have a way to open a window for them.
+#
+#   5. Fallback              -> print clear next steps and exit non-zero.
+#
+# The script is side-effect-only and prints a single status line for
+# Claude Code to echo back.
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHESS_JS="$SCRIPT_DIR/claude-chess.js"
 
-# Resolve node up front so the tmux/osascript payload doesn't depend on the
-# new shell's PATH (nvm, homebrew, asdf, etc. are common sources of drift).
 NODE_BIN="$(command -v node || true)"
 if [ -z "$NODE_BIN" ]; then
   echo "claude-chess: could not find 'node' on PATH. Install Node.js 18+ and retry." >&2
@@ -34,52 +38,92 @@ fi
 
 CHESS_CMD="'$NODE_BIN' '$CHESS_JS'"
 
-in_tmux()   { [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; }
-is_macos()  { [ "$(uname)" = "Darwin" ]; }
+in_tmux()  { [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; }
+has_tmux() { command -v tmux >/dev/null 2>&1; }
+is_macos() { [ "$(uname)" = "Darwin" ]; }
 
-launch_tmux() {
-  # Ask tmux how wide the current pane is so we can choose a sensible split.
-  # Chess's frame needs ~86 columns; if the parent pane is wide enough to
-  # afford that plus breathing room for Claude Code, reserve a fixed width.
-  # Otherwise fall back to a 50/50 split and let the user resize.
+# --- Case 1: already in tmux ------------------------------------------------
+launch_tmux_split() {
   local parent_cols
   parent_cols="$(tmux display-message -p '#{pane_width}' 2>/dev/null || echo 160)"
-
   if [ "$parent_cols" -ge 180 ]; then
     tmux split-window -h -l 90 "$CHESS_CMD"
   else
     tmux split-window -h -p 50 "$CHESS_CMD"
   fi
-
-  # Optional nicety: title the new pane so tmux's status line reads well.
   tmux select-pane -T 'claude-chess' 2>/dev/null || true
-
-  echo "chess launched in a new tmux pane (use 'ctrl-b ←/→' to switch, 'ctrl-b z' to zoom)"
+  echo "chess launched in a new tmux pane → (ctrl-b ←/→ to switch · ctrl-b z to zoom · ? in chess for help)"
 }
 
-launch_terminal_app() {
-  # Escape the command for AppleScript's double-quoted string.
-  local escaped
-  escaped="${CHESS_CMD//\\/\\\\}"
+# --- Case 2: macOS + tmux, not yet inside tmux ------------------------------
+# We build a tiny bootstrap script in a tempfile so AppleScript only has to
+# invoke one path. That dodges all the quoting/escaping footguns.
+launch_mac_new_terminal_tmux() {
+  local session="claude-chess-$$"
+  local script
+  script="$(mktemp -t claude-chess-bootstrap.XXXXXX)"
+
+  {
+    echo '#!/usr/bin/env bash'
+    echo "set -e"
+    echo "session='$session'"
+    echo "CHESS='$NODE_BIN $CHESS_JS'"
+    echo 'if command -v claude >/dev/null 2>&1; then'
+    echo '  tmux new-session -d -s "$session" claude'
+    echo '  tmux split-window -t "$session" -h "$CHESS"'
+    echo '  tmux select-pane  -t "$session" -L'
+    echo '  tmux attach       -t "$session"'
+    echo 'else'
+    echo '  tmux new-session -s "$session" "$CHESS"'
+    echo 'fi'
+  } > "$script"
+  chmod +x "$script"
+
+  osascript \
+    -e 'tell application "Terminal" to activate' \
+    -e "tell application \"Terminal\" to do script \"$script\"" \
+    >/dev/null
+
+  if command -v claude >/dev/null 2>&1; then
+    echo "new Terminal window opened with a tmux session — Claude Code on the left, chess on the right"
+  else
+    echo "new Terminal window opened with a tmux session running chess ($session)"
+  fi
+}
+
+# --- Case 3: macOS, no tmux -------------------------------------------------
+launch_mac_new_terminal_plain() {
+  local escaped="${CHESS_CMD//\\/\\\\}"
   escaped="${escaped//\"/\\\"}"
   osascript \
     -e 'tell application "Terminal" to activate' \
     -e "tell application \"Terminal\" to do script \"$escaped\"" \
     >/dev/null
-  echo "chess launched in a new Terminal window"
+  echo "chess launched in a new Terminal window (install tmux — 'brew install tmux' — to get side-by-side panes)"
 }
 
-if in_tmux; then
-  launch_tmux
-elif is_macos; then
-  launch_terminal_app
+# --- Case 4: Linux/other with tmux available --------------------------------
+launch_detached_tmux() {
+  local session="claude-chess-$$"
+  tmux new-session -d -s "$session" "$NODE_BIN $CHESS_JS"
+  cat <<EOF
+chess is running in a detached tmux session.
+
+  attach with:   tmux attach -t $session
+EOF
+}
+
+if   in_tmux;              then launch_tmux_split
+elif is_macos && has_tmux; then launch_mac_new_terminal_tmux
+elif is_macos;             then launch_mac_new_terminal_plain
+elif has_tmux;             then launch_detached_tmux
 else
   cat <<EOF
 claude-chess can't take over Claude Code's terminal directly — a TTY only
 has room for one interactive program at a time.
 
 Options:
-  * Run Claude Code inside tmux, then re-run /chess (tmux split-pane mode).
+  * Install tmux (apt/brew/pacman), then re-run /chess.
   * Or open a second terminal and run:  $NODE_BIN $CHESS_JS
 EOF
   exit 2
