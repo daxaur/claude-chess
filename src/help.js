@@ -47,7 +47,7 @@ const SECTIONS = [
   },
 ];
 
-const BOX_WIDTH = 64;
+const BOX_WIDTH = 70;
 
 export function renderHelpOverlay() {
   const lines = [];
