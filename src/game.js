@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import { Chess } from 'chess.js';
-import { C, CLEAR, HIDE, SHOW, moveTo } from './theme.js';
+import { C, CLEAR, SHOW } from './theme.js';
 import { Screen } from './screen.js';
 import { createInput } from './input.js';
 import { renderBoard, BOARD_WIDTH, FILES } from './board.js';
@@ -124,9 +124,15 @@ export async function runGame({ difficulty, playerColor = 'w' }) {
   }
 
   // Attempt a move by the human player. Returns true if played.
+  // chess.js throws on illegal moves, so we guard with try/catch even though
+  // legalTargets should already filter out bad squares.
   function tryHumanMove(from, to) {
-    // Auto-promote to queen for simplicity.
-    const move = chess.move({ from, to, promotion: 'q' });
+    let move = null;
+    try {
+      move = chess.move({ from, to, promotion: 'q' });
+    } catch {
+      return false;
+    }
     if (!move) return false;
     lastMove = { from: move.from, to: move.to };
     setSelection(null);
@@ -140,10 +146,22 @@ export async function runGame({ difficulty, playerColor = 'w' }) {
     await sleep(400); // dramatic pause so the user sees "thinking…"
     try {
       const mv = think(chess, difficulty);
-      const move = chess.move({ from: mv.from, to: mv.to, promotion: 'q' });
+      // js-chess-engine can occasionally propose a move chess.js rejects
+      // (e.g. an en-passant it thought was legal). Fall back to any legal
+      // move so the game never deadlocks.
+      let move = null;
+      try {
+        move = chess.move({ from: mv.from, to: mv.to, promotion: 'q' });
+      } catch {
+        const legal = chess.moves({ verbose: true });
+        if (legal.length > 0) {
+          const pick = legal[Math.floor(Math.random() * legal.length)];
+          move = chess.move({ from: pick.from, to: pick.to, promotion: 'q' });
+        }
+      }
       if (move) lastMove = { from: move.from, to: move.to };
-    } catch (e) {
-      // Engine couldn't find a legal move — treat as stalemate fallback.
+    } catch {
+      // Engine couldn't find a move at all.
     }
     thinking = false;
     status = evaluateStatus(chess);

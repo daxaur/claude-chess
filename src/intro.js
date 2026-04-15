@@ -106,7 +106,7 @@ export async function playIntro({ skippable = true } = {}) {
     if (!skipped) {
       drawFrame(BUST_FULL, 'press any key to continue…', cols);
       await new Promise((resolve) => {
-        const done = () => resolve();
+        const done = () => { stdin.off('data', done); resolve(); };
         stdin.once('data', done);
       });
     }
