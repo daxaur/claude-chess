@@ -1,29 +1,40 @@
 # claude-chess
 
-Play chess against Claude in your terminal. Beautiful unicode board, crisp ANSI rendering, multiple difficulty levels, and ships as a Claude Code plugin so you can launch it with `/chess`.
+A terminal chess game against Claude. Clean monochrome board, outlined vs filled pieces, animated "thinking" shimmer, auto-saved games you can resume any time, and a Claude Code plugin that launches the whole thing with `/chess`.
 
 ```
-       ╔══════════════════════════════════════════╗
-       ║         c l a u d e - c h e s s          ║
-       ╚══════════════════════════════════════════╝
+          ✦   C L A U D E   ·   C H E S S   ✦          game a8f2c1  ·  Lv.3 Expert  ·  ● saved
+          ─────────────────────────────────────────────────────────────────────
 
-            a     b     c     d     e     f     g     h
-         ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐
-       8 │  ♜  │  ♞  │  ♝  │  ♛  │  ♚  │  ♝  │  ♞  │  ♜  │ 8
-         ├─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┤
-       7 │  ♟  │  ♟  │  ♟  │  ♟  │  ♟  │  ♟  │  ♟  │  ♟  │ 7
-         ├─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┤
-         ...
+               a    b    c    d    e    f    g    h
+           8   ♜    ♞    ♝    ♛    ♚    ♝    ♞    ♜   8       O P P O N E N T
+
+           7   ♟    ♟    ♟    ♟         ♟    ♟    ♟   7        ✦ Claude
+                                                               Lv.3 · Expert
+           6                                          6        Deep search. Plays sharp chess.
+
+           5                   ♟                      5       ─────────────────────
+                                                               T U R N
+           4                        ♙                 4
+                                                               Claude is thinking
+           3                                          3        · · ✦ · ·
+           ...
 ```
+
+## Why
+
+You're pair-programming with Claude and it's compiling for 40 seconds. Or you're rubber-ducking a hard bug and need 30 seconds away from the keyboard. Or it's late and you just want to play chess in your terminal without a web browser. `claude-chess` is for any of those.
 
 ## Features
 
-- **Unicode chess pieces** rendered with ANSI color — white vs black, light/dark squares, highlighted moves.
-- **Claude as your opponent** — pluggable engine with difficulty levels from *Intern* to *Grandmaster*.
-- **Animated intro** — watch Claude suit up for the match.
-- **Keyboard navigation** — arrow keys to move cursor, enter to select/move, `u` to undo, `r` to resign, `q` to quit.
-- **Move history + captured pieces** panel alongside the board.
-- **Claude Code plugin** — drop the repo into `~/.claude/plugins/` and invoke `/chess` inside Claude Code.
+- **Every game auto-saves.** Quit mid-game at any time; it shows up as "Continue" next launch.
+- **Library** of every game you've played, with mini-board previews and resumable positions.
+- **Five difficulty levels** from *Intern* (random moves) to *Grandmaster* (depth-4 search), backed by [`js-chess-engine`](https://www.npmjs.com/package/js-chess-engine).
+- **Claude-Code-flavoured shimmer** — a ✦ glides across a row of dots while the engine thinks.
+- **Outlined vs filled pieces.** Your pieces use the outlined glyphs (♙♘♗♖♕♔), Claude's use the filled ones (♟♞♝♜♛♚) — you can tell sides apart at a glance, like a real set.
+- **Cursor-based input.** Arrows to move the cursor, Enter to select, Enter again to move. No algebraic typing.
+- **Autosave blip** — a small `● saved` indicator flashes in the header after each move so you know nothing's been lost.
+- **Move history, captured pieces, material balance, check highlight, last-move highlight.**
 
 ## Install
 
@@ -43,54 +54,96 @@ claude-chess
 
 ## Use as a Claude Code plugin
 
+Symlink the repo into your plugins directory:
+
 ```bash
-# Symlink (or clone) this repo into your plugins directory
 ln -s "$(pwd)" ~/.claude/plugins/claude-chess
 ```
 
-Then inside Claude Code:
+Then inside Claude Code, run:
 
 ```
 /chess
 ```
 
-The slash command opens a new Terminal window running the game, so it never
-takes over your Claude Code session. On Linux or Windows the command prints
-instructions to run `claude-chess` (or `node ~/.claude/plugins/claude-chess/bin/claude-chess.js`)
-in a terminal of your choice.
+The slash command opens a fresh Terminal window running the game, so it never takes over your Claude Code session.
 
-### Project layout
+### Why a new window instead of the same terminal?
 
-```
-claude-chess/
-├── .claude-plugin/plugin.json   # plugin metadata
-├── commands/chess.md            # /chess slash command
-├── skills/chess/SKILL.md        # modern skill entry point
-├── bin/claude-chess.js          # CLI entry (spawned by the plugin)
-└── src/                         # board, sidebar, engine, game loop
-```
+A TTY can only have one raw-mode consumer at a time, and Claude Code is already that consumer. A true in-place takeover would require forking Claude Code itself. Spawning a sibling Terminal is the pragmatic alternative — you alt-tab between the two, and because every move auto-saves, you can leave the chess window at any point and resume later.
+
+On Linux/Windows (no `osascript`), the slash command prints instructions to run `claude-chess` in any terminal of your choice; the game is otherwise identical.
 
 ## Controls
+
+**Main menu**
+
+| Key         | Action                             |
+|-------------|------------------------------------|
+| ↑ ↓         | Choose                             |
+| Enter       | Select                             |
+| q           | Quit                               |
+
+**In-game**
 
 | Key         | Action                             |
 |-------------|------------------------------------|
 | ← → ↑ ↓     | Move cursor                        |
 | Enter / Space | Select piece / confirm move      |
 | Esc         | Cancel selection                   |
-| `u`         | Undo last move                     |
-| `r`         | Resign                             |
-| `n`         | New game                           |
-| `q`         | Quit                               |
+| u           | Undo last ply-pair                 |
+| r           | Resign                             |
+| n           | New game                           |
+| m           | Back to menu (game is saved)       |
+| l           | Open library                       |
+| q           | Quit (game is saved)               |
 
-## Difficulty levels
+**Library**
 
-| Level | Label       | Engine depth |
-|-------|-------------|--------------|
-| 1     | Intern      | 0 (random-ish)|
-| 2     | Hobbyist    | 1            |
-| 3     | Club player | 2            |
-| 4     | Expert      | 3            |
-| 5     | Grandmaster | 4            |
+| Key         | Action                             |
+|-------------|------------------------------------|
+| ↑ ↓         | Select game                        |
+| Enter       | Open / resume                      |
+| d           | Delete (confirm with `y`)          |
+| Esc         | Back                               |
+
+## Difficulty
+
+| Level | Label       | Engine depth | Character                        |
+|-------|-------------|--------------|----------------------------------|
+| 1     | Intern      | 0            | Random-ish moves                 |
+| 2     | Hobbyist    | 1            | Shallow search                   |
+| 3     | Club player | 2            | Solid tactics                    |
+| 4     | Expert      | 3            | Deep search, sharp play          |
+| 5     | Grandmaster | 4            | Strongest setting                |
+
+## Storage
+
+Games live in `~/.claude/claude-chess/games/<id>.json` — one file per game, plain JSON, containing PGN + FEN + metadata. Safe to delete by hand, copy between machines, or inspect.
+
+## Project layout
+
+```
+claude-chess/
+├── .claude-plugin/plugin.json   # plugin metadata
+├── commands/chess.md            # /chess slash command
+├── skills/chess/SKILL.md        # modern skill form (Claude can auto-invoke)
+├── bin/claude-chess.js          # CLI entry
+└── src/
+    ├── theme.js                 # palette, pieces, typography helpers
+    ├── screen.js                # ANSI write buffer + exit handlers
+    ├── input.js                 # raw-mode keyboard input
+    ├── board.js                 # board renderer
+    ├── sidebar.js               # right-hand panel
+    ├── spinner.js               # shimmer animation
+    ├── engine.js                # js-chess-engine wrapper
+    ├── persistence.js           # GameStore + formatters
+    ├── mainMenu.js              # New / Continue / Library / Quit
+    ├── library.js               # saved-games browser
+    ├── menu.js                  # difficulty picker
+    ├── intro.js                 # pre-game ASCII animation
+    └── game.js                  # main game loop
+```
 
 ## License
 
