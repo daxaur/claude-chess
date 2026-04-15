@@ -28,16 +28,23 @@ Play chess against Claude in your terminal. Beautiful unicode board, crisp ANSI 
 ## Install
 
 ```bash
-git clone https://github.com/<you>/claude-chess.git
+git clone https://github.com/daxaur/claude-chess.git
 cd claude-chess
 npm install
 npm start
 ```
 
+Or install globally so `claude-chess` is on your PATH:
+
+```bash
+npm install -g .
+claude-chess
+```
+
 ## Use as a Claude Code plugin
 
 ```bash
-# Link into your Claude Code plugins directory
+# Symlink (or clone) this repo into your plugins directory
 ln -s "$(pwd)" ~/.claude/plugins/claude-chess
 ```
 
@@ -45,6 +52,22 @@ Then inside Claude Code:
 
 ```
 /chess
+```
+
+The slash command opens a new Terminal window running the game, so it never
+takes over your Claude Code session. On Linux or Windows the command prints
+instructions to run `claude-chess` (or `node ~/.claude/plugins/claude-chess/bin/claude-chess.js`)
+in a terminal of your choice.
+
+### Project layout
+
+```
+claude-chess/
+├── .claude-plugin/plugin.json   # plugin metadata
+├── commands/chess.md            # /chess slash command
+├── skills/chess/SKILL.md        # modern skill entry point
+├── bin/claude-chess.js          # CLI entry (spawned by the plugin)
+└── src/                         # board, sidebar, engine, game loop
 ```
 
 ## Controls
