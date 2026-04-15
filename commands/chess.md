@@ -1,33 +1,27 @@
 ---
-description: Launch a chess match against Claude in a new terminal window.
-allowed-tools: Bash(osascript:*), Bash(claude-chess:*), Bash(node:*), Bash(which:*)
+description: Launch a chess match against Claude. Splits your tmux pane (when in tmux) so Claude Code and chess stay visible side by side; falls back to a new Terminal window otherwise.
+allowed-tools: Bash(claude-chess-launch:*), Bash(tmux:*), Bash(osascript:*), Bash(node:*)
 ---
 
-Launch the `claude-chess` terminal UI so the user can play a full game of chess
-against Claude without leaving their workflow.
+Run `claude-chess-launch` using the Bash tool. This launcher handles the
+surface selection itself:
 
-## Steps
+- **Inside tmux** (the preferred path): it splits the current pane
+  horizontally and starts the chess game in the new pane. Both Claude Code
+  and the chess board stay visible in the same terminal window; switch
+  focus with `ctrl-b ←/→` and zoom a pane with `ctrl-b z`.
+- **macOS without tmux**: opens a new Terminal.app window running the game.
+- **Anywhere else**: prints instructions and exits non-zero (a TUI can't
+  take over Claude Code's terminal directly).
 
-1. On macOS, open a new Terminal.app window running the game. Prefer a globally
-   installed `claude-chess` binary; fall back to invoking the plugin's `bin/`
-   script directly via `node`.
+After running, report back briefly:
 
-   ```bash
-   osascript \
-     -e 'tell application "Terminal" to activate' \
-     -e 'tell application "Terminal" to do script "claude-chess 2>/dev/null || node \"$HOME/.claude/plugins/claude-chess/bin/claude-chess.js\""'
-   ```
+- What the launcher did (tmux split / new window / instructions printed).
+- Relay the controls once:
+  - Arrow keys move the cursor
+  - Enter selects a piece, then Enter again makes the move
+  - `u` undo · `r` resign · `n` new game · `m` menu · `l` library · `q` quit
+  - Every move auto-saves — quit any time and pick up from the main menu
 
-2. Once launched, confirm to the user that a new Terminal window has opened and
-   briefly describe the controls:
-
-   - Arrow keys move the cursor
-   - `Enter` selects a piece, then `Enter` again makes the move
-   - `u` undo · `r` resign · `n` new game · `q` quit
-
-3. If `osascript` is unavailable (Linux/Windows), tell the user to run
-   `claude-chess` (or `node ~/.claude/plugins/claude-chess/bin/claude-chess.js`)
-   directly in a terminal of their choice.
-
-Do not summarise the game state or try to play for the user — the game is
-self-contained in its own window.
+Do not play for the user and do not render the board in chat — the TUI
+owns the chess experience.
