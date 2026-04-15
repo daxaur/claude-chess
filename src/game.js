@@ -1,15 +1,18 @@
 import chalk from 'chalk';
 import { Chess } from 'chess.js';
-import { C, CLEAR, SHOW } from './theme.js';
+import {
+  C, EMBLEM, CLEAR, SHOW, spaced, DIFFICULTIES,
+} from './theme.js';
 import { Screen } from './screen.js';
 import { createInput } from './input.js';
 import { renderBoard, BOARD_WIDTH, FILES } from './board.js';
 import { renderSidebar, SIDEBAR_WIDTH } from './sidebar.js';
-import { think } from './engine.js';
+import { thinkAsync } from './engine.js';
+import { createShimmer } from './spinner.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Coords helpers — we always view from white's side, so screen up = rank+1.
+// Move the cursor by (df, dr) file/rank deltas, clamped to the board.
 function shiftCursor(sq, df, dr) {
   const f = sq.charCodeAt(0) - 'a'.charCodeAt(0);
   const r = parseInt(sq[1], 10);
@@ -31,108 +34,151 @@ function findKingSquare(chess, color) {
   return null;
 }
 
-function evaluateStatus(chess, resigned = null) {
-  if (resigned) return { kind: 'resigned', message: `${resigned === 'w' ? 'You' : 'Claude'} resigned` };
+function evaluateResult(chess, playerColor) {
   if (chess.isCheckmate()) {
-    const loser = chess.turn(); // side to move is mated
-    const msg = loser === 'w' ? 'Checkmate — Claude wins' : 'Checkmate — you win!';
-    return { kind: 'checkmate', message: msg };
+    return chess.turn() === playerColor
+      ? { kind: 'checkmate-claude', message: 'Checkmate — Claude wins' }
+      : { kind: 'checkmate-user',   message: 'Checkmate — you win!' };
   }
-  if (chess.isStalemate())       return { kind: 'stalemate',   message: 'Stalemate — it’s a draw' };
-  if (chess.isThreefoldRepetition()) return { kind: 'draw',    message: 'Draw by repetition' };
-  if (chess.isInsufficientMaterial())return { kind: 'draw',    message: 'Draw — insufficient material' };
-  if (chess.isDraw())            return { kind: 'draw',        message: 'Draw (50-move rule)' };
+  if (chess.isStalemate())            return { kind: 'stalemate', message: 'Stalemate — draw' };
+  if (chess.isThreefoldRepetition())  return { kind: 'draw',      message: 'Draw by repetition' };
+  if (chess.isInsufficientMaterial()) return { kind: 'draw',      message: 'Draw — insufficient material' };
+  if (chess.isDraw())                 return { kind: 'draw',      message: 'Draw (50-move rule)' };
   return { kind: 'playing' };
 }
 
-// Compose header + board + sidebar into the frame buffer.
-function drawFrame(screen, chess, viewState) {
-  const { difficulty, thinking, status, playerColor, cursor, selected, legalTargets, lastMove } = viewState;
-
-  // Row coordinates (1-indexed for ANSI moveTo).
-  const HEADER_ROW = 1;
-  const BOARD_ROW  = 5;
-  const SIDEBAR_COL = BOARD_WIDTH + 4;
-
-  screen.clear().hideCursor();
-
-  // Header banner (kept simple so it's always visible at the top).
-  const title = chalk.hex(C.accent).bold('♔  c l a u d e   ·   c h e s s');
-  const version = chalk.hex(C.subtle)('v0.1');
-  screen.at(HEADER_ROW, 3, title);
-  screen.at(HEADER_ROW, BOARD_WIDTH + SIDEBAR_WIDTH, version);
-  screen.at(HEADER_ROW + 1, 3, chalk.hex(C.accentDim)('─'.repeat(BOARD_WIDTH + SIDEBAR_WIDTH + 4)));
-
-  // Board
-  const boardLines = renderBoard(chess, {
-    cursor,
-    selected,
-    legalTargets,
-    lastMove,
-    checkSquare: chess.inCheck() ? findKingSquare(chess, chess.turn()) : null,
-  });
-  screen.block(BOARD_ROW, 2, boardLines);
-
-  // Sidebar
-  const sidebarLines = renderSidebar(chess, { difficulty, thinking, status, playerColor });
-  screen.block(BOARD_ROW, SIDEBAR_COL, sidebarLines);
-
-  // Footer with controls + hint about current selection.
-  const footerRow = BOARD_ROW + 20;
-  const selHint = selected
-    ? chalk.hex(C.success)(`selected ${selected.toUpperCase()}`)
-    : chalk.hex(C.subtle)('no selection');
-  const cursorHint = chalk.hex(C.text)(`cursor ${cursor.toUpperCase()}`);
-  screen.at(footerRow, 3, `${cursorHint}   ·   ${selHint}`);
-  screen.at(
-    footerRow + 1,
-    3,
-    chalk.hex(C.subtle)(
-      '← → ↑ ↓ move   ·   ↵ select / move   ·   esc cancel   ·   u undo   ·   r resign   ·   n new   ·   q quit'
-    )
-  );
-
-  screen.flush();
+function drawHeader(screen, { record, saveBlip }) {
+  const diff = DIFFICULTIES[record.difficulty - 1];
+  const left = chalk.hex(C.accent).bold(EMBLEM) + '  ' +
+               chalk.hex(C.text).bold(spaced('claude · chess'));
+  const right = chalk.hex(C.subtle)(
+    `game ${record.id}  ·  Lv.${record.difficulty} ${diff.label}  ·  `
+  ) + (saveBlip
+    ? chalk.hex(C.success)('● saved')
+    : chalk.hex(C.muted)('○ autosave'));
+  screen.at(1, 3, left);
+  const totalWidth = BOARD_WIDTH + SIDEBAR_WIDTH + 4;
+  const stripped = right.replace(/\u001b\[[0-9;]*m/g, '');
+  const col = Math.max(3, totalWidth - stripped.length + 3);
+  screen.at(1, col, right);
+  screen.at(2, 3, chalk.hex(C.divider)('─'.repeat(totalWidth)));
 }
 
-export async function runGame({ difficulty, playerColor = 'w' }) {
-  const chess = new Chess();
-  const screen = new Screen();
+function drawFooter(screen, { cursor, selected, status }, rowOffset) {
+  const row = rowOffset;
+  const selHint = selected
+    ? chalk.hex(C.success)(`selected ${selected.toUpperCase()}`)
+    : chalk.hex(C.muted)('no selection');
+  const cursorHint = chalk.hex(C.text)(`cursor ${cursor.toUpperCase()}`);
+  screen.at(row, 3, `${cursorHint}   ·   ${selHint}`);
 
-  let cursor = 'e2';
+  const keys = status?.kind && status.kind !== 'playing'
+    ? '↵ / n  new game   ·   l  library   ·   q  quit'
+    : '← → ↑ ↓  move   ·   ↵  select / move   ·   esc  cancel   ·   u  undo   ·   r  resign   ·   m  menu   ·   q  quit';
+  screen.at(row + 1, 3, chalk.hex(C.muted)(keys));
+}
+
+export async function runGame({ store, record }) {
+  const chess = new Chess();
+  // Replay PGN if we're resuming an existing game.
+  if (record.pgn) {
+    try { chess.loadPgn(record.pgn); }
+    catch { /* corrupt save — start fresh at stored FEN if possible */
+      try { chess.load(record.fen); } catch { /* ignore */ }
+    }
+  }
+
+  const screen = new Screen();
+  const playerColor = record.playerColor ?? 'w';
+
+  let cursor = playerColor === 'w' ? 'e2' : 'e7';
   let selected = null;
   let legalTargets = new Set();
   let lastMove = null;
-  let status = { kind: 'playing' };
+  let status = evaluateResult(chess, playerColor);
   let thinking = false;
+  let saveBlip = false;
+  let saveBlipTimer = null;
+  let shimmer = null;
+  let shimmerTimer = null;
   let resolveExit;
 
-  const view = () => ({
-    difficulty, thinking, status, playerColor,
-    cursor, selected, legalTargets, lastMove,
-  });
-  const draw = () => drawFrame(screen, chess, view());
+  const flashSave = () => {
+    saveBlip = true;
+    if (saveBlipTimer) clearTimeout(saveBlipTimer);
+    saveBlipTimer = setTimeout(() => { saveBlip = false; draw(); }, 700);
+  };
+
+  const persist = (patch = {}) => {
+    const rec = store.update(record.id, {
+      pgn: chess.pgn(),
+      fen: chess.fen(),
+      moveCount: chess.history().length,
+      ...patch,
+    });
+    if (rec) Object.assign(record, rec);
+    flashSave();
+  };
+
+  const draw = () => {
+    screen.clear().hideCursor();
+    drawHeader(screen, { record, saveBlip });
+
+    const checkSquare = chess.inCheck() ? findKingSquare(chess, chess.turn()) : null;
+    const boardLines = renderBoard(chess, {
+      cursor, selected, legalTargets, lastMove, checkSquare,
+    });
+    const sidebarLines = renderSidebar(chess, {
+      difficulty: record.difficulty,
+      thinking,
+      spinnerFrame: shimmer?.frame(),
+      status,
+      playerColor,
+      gameId: record.id,
+      autosaved: saveBlip,
+    });
+
+    const BOARD_ROW = 5;
+    screen.block(BOARD_ROW, 2, boardLines);
+    screen.block(BOARD_ROW, BOARD_WIDTH + 4, sidebarLines);
+
+    drawFooter(screen, { cursor, selected, status }, BOARD_ROW + 20);
+
+    // Game-over overlay — painted over the top of the footer space.
+    if (status?.kind && status.kind !== 'playing') {
+      const banner = ' '.repeat(2) + chalk.hex(C.accent).bold(
+        EMBLEM + '  ' + (status.message ?? status.kind.toUpperCase())
+      );
+      screen.at(BOARD_ROW + 19, 3, banner);
+    }
+    screen.flush();
+  };
+
+  // Start / stop the shimmer animation ticker.
+  const startShimmer = () => {
+    shimmer = createShimmer();
+    shimmerTimer = setInterval(() => { shimmer.tick(); draw(); }, 90);
+  };
+  const stopShimmer = () => {
+    if (shimmerTimer) { clearInterval(shimmerTimer); shimmerTimer = null; }
+    shimmer = null;
+  };
 
   function setSelection(sq) {
     selected = sq;
     if (sq) {
-      const moves = chess.moves({ square: sq, verbose: true });
-      legalTargets = new Set(moves.map((m) => m.to));
+      legalTargets = new Set(
+        chess.moves({ square: sq, verbose: true }).map((m) => m.to)
+      );
     } else {
       legalTargets = new Set();
     }
   }
 
-  // Attempt a move by the human player. Returns true if played.
-  // chess.js throws on illegal moves, so we guard with try/catch even though
-  // legalTargets should already filter out bad squares.
   function tryHumanMove(from, to) {
     let move = null;
-    try {
-      move = chess.move({ from, to, promotion: 'q' });
-    } catch {
-      return false;
-    }
+    try { move = chess.move({ from, to, promotion: 'q' }); }
+    catch { return false; }
     if (!move) return false;
     lastMove = { from: move.from, to: move.to };
     setSelection(null);
@@ -142,64 +188,78 @@ export async function runGame({ difficulty, playerColor = 'w' }) {
   async function claudeMove() {
     if (status.kind !== 'playing') return;
     thinking = true;
+    startShimmer();
     draw();
-    await sleep(400); // dramatic pause so the user sees "thinking…"
-    try {
-      const mv = think(chess, difficulty);
-      // js-chess-engine can occasionally propose a move chess.js rejects
-      // (e.g. an en-passant it thought was legal). Fall back to any legal
-      // move so the game never deadlocks.
-      let move = null;
-      try {
-        move = chess.move({ from: mv.from, to: mv.to, promotion: 'q' });
-      } catch {
+
+    // Keep the "thinking" frame visible long enough to read at high depth.
+    const minPause = 500 + record.difficulty * 80;
+    const started = Date.now();
+
+    let mv = null;
+    try { mv = await thinkAsync(chess, record.difficulty); }
+    catch { /* fall through */ }
+
+    const elapsed = Date.now() - started;
+    if (elapsed < minPause) await sleep(minPause - elapsed);
+
+    let move = null;
+    if (mv) {
+      try { move = chess.move({ from: mv.from, to: mv.to, promotion: 'q' }); }
+      catch {
         const legal = chess.moves({ verbose: true });
         if (legal.length > 0) {
-          const pick = legal[Math.floor(Math.random() * legal.length)];
-          move = chess.move({ from: pick.from, to: pick.to, promotion: 'q' });
+          const pick = legal[0];
+          try { move = chess.move({ from: pick.from, to: pick.to, promotion: 'q' }); }
+          catch { /* ignore */ }
         }
       }
-      if (move) lastMove = { from: move.from, to: move.to };
-    } catch {
-      // Engine couldn't find a move at all.
     }
+    if (move) lastMove = { from: move.from, to: move.to };
+
+    stopShimmer();
     thinking = false;
-    status = evaluateStatus(chess);
+    status = evaluateResult(chess, playerColor);
+    persist({ result: status.kind === 'playing' ? 'playing' : status.kind });
     draw();
   }
 
   function undoLastPair() {
-    // Undo Claude's move, then the player's, so it's our turn again.
     const a = chess.undo();
     const b = chess.undo();
     if (!a && !b) return;
-    // Recover lastMove from history, if any.
     const h = chess.history({ verbose: true });
     lastMove = h.length ? { from: h[h.length - 1].from, to: h[h.length - 1].to } : null;
     setSelection(null);
-    status = evaluateStatus(chess);
+    status = evaluateResult(chess, playerColor);
+    persist({ result: status.kind === 'playing' ? 'playing' : status.kind });
   }
 
   const input = createInput();
   const handler = async (key) => {
     if (key.name === 'ctrl-c') {
-      status = { kind: 'quit' };
-      return resolveExit(status);
+      persist();
+      return resolveExit({ kind: 'quit' });
     }
     if (thinking) return;
 
-    // Terminal controls available even when the game is over.
     if (key.name === 'q') {
-      status = { kind: 'quit' };
-      return resolveExit(status);
+      persist();
+      return resolveExit({ kind: 'quit' });
     }
-    if (key.name === 'n') {
-      return resolveExit({ kind: 'newgame' });
+    if (key.name === 'm') {
+      persist();
+      return resolveExit({ kind: 'menu' });
+    }
+    if (key.name === 'l') {
+      persist();
+      return resolveExit({ kind: 'library' });
     }
 
     if (status.kind !== 'playing') {
-      // any other key on game-over screen just redraws
-      draw();
+      // After game-over, ↵ or `n` starts a new game; anything else ignored.
+      if (key.name === 'enter' || key.name === 'space' || key.name === 'n') {
+        return resolveExit({ kind: 'newgame' });
+      }
       return;
     }
 
@@ -210,8 +270,10 @@ export async function runGame({ difficulty, playerColor = 'w' }) {
       case 'right': cursor = shiftCursor(cursor,  1, 0); draw(); return;
       case 'esc':   setSelection(null); draw(); return;
       case 'u':     undoLastPair(); draw(); return;
+      case 'n':     persist(); return resolveExit({ kind: 'newgame' });
       case 'r': {
-        status = { kind: 'resigned', message: 'You resigned — Claude wins' };
+        status = { kind: 'resigned-user', message: 'You resigned — Claude wins' };
+        persist({ result: 'resigned-user' });
         draw();
         return;
       }
@@ -224,10 +286,10 @@ export async function runGame({ difficulty, playerColor = 'w' }) {
           draw();
           return;
         }
-        // A piece is already selected: either move, re-select, or cancel.
         if (legalTargets.has(cursor)) {
           if (tryHumanMove(selected, cursor)) {
-            status = evaluateStatus(chess);
+            status = evaluateResult(chess, playerColor);
+            persist({ result: status.kind === 'playing' ? 'playing' : status.kind });
             draw();
             if (status.kind === 'playing') await claudeMove();
           }
@@ -245,16 +307,23 @@ export async function runGame({ difficulty, playerColor = 'w' }) {
       }
     }
   };
-
   input.on(handler);
 
   return new Promise((resolve) => {
-    resolveExit = (s) => {
+    resolveExit = (outcome) => {
       input.off(handler);
       input.close();
+      stopShimmer();
+      if (saveBlipTimer) clearTimeout(saveBlipTimer);
       process.stdout.write(CLEAR + SHOW);
-      resolve(s);
+      resolve(outcome);
     };
     draw();
+
+    // If we loaded a game where it's Claude's turn, kick the engine off
+    // immediately so the player sees the shimmer right away.
+    if (status.kind === 'playing' && chess.turn() !== playerColor) {
+      claudeMove();
+    }
   });
 }
