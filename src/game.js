@@ -5,14 +5,19 @@ import {
 } from './theme.js';
 import { Screen } from './screen.js';
 import { createInput } from './input.js';
-import { renderBoard, BOARD_WIDTH, FILES } from './board.js';
+import { renderBoard, BOARD_WIDTH, BOARD_HEIGHT, FILES } from './board.js';
 import { renderSidebar, SIDEBAR_WIDTH } from './sidebar.js';
 import { thinkAsync } from './engine.js';
 import { createShimmer } from './spinner.js';
+import { renderHelpOverlay } from './help.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Move the cursor by (df, dr) file/rank deltas, clamped to the board.
+// Human-friendly piece names for the status-line instruction text.
+const PIECE_NAME = {
+  p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king',
+};
+
 function shiftCursor(sq, df, dr) {
   const f = sq.charCodeAt(0) - 'a'.charCodeAt(0);
   const r = parseInt(sq[1], 10);
@@ -47,6 +52,42 @@ function evaluateResult(chess, playerColor) {
   return { kind: 'playing' };
 }
 
+// Single-line "do this next" nudge. The most-important thing the player
+// can do right now, phrased as an action.
+function statusGuidance(chess, { selected, cursor, status, playerColor, thinking }) {
+  if (status?.kind && status.kind !== 'playing') {
+    if (status.kind.startsWith('checkmate-user')) return '↵ or n for a new game · you won, nicely done';
+    if (status.kind.startsWith('checkmate-claude')) return '↵ or n for a new game · Claude takes this one';
+    return `↵ or n for a new game · ${status.message ?? ''}`;
+  }
+  if (thinking) return 'Claude is thinking — sit tight';
+  if (chess.turn() !== playerColor) return 'Claude to move';
+
+  const here = chess.get(cursor);
+  if (selected) {
+    const piece = chess.get(selected);
+    const name = piece ? PIECE_NAME[piece.type] : 'piece';
+    if (cursor === selected) return `↵ somewhere legal (blue) to move your ${name} · esc to cancel`;
+    const target = chess.get(cursor);
+    if (target && target.color === playerColor && cursor !== selected) {
+      return `↵ picks up this ${PIECE_NAME[target.type]} instead`;
+    }
+    // Is the current cursor a legal target for the selected piece?
+    const legal = chess.moves({ square: selected, verbose: true })
+      .some((m) => m.to === cursor);
+    if (legal) return `↵ to move your ${name} to ${cursor.toUpperCase()}`;
+    return `↵ on a blue square to move your ${name} · esc to cancel`;
+  }
+
+  if (here && here.color === playerColor) {
+    return `↵ to pick up your ${PIECE_NAME[here.type]} on ${cursor.toUpperCase()}`;
+  }
+  if (here) {
+    return `Claude’s ${PIECE_NAME[here.type]} — move cursor to your own piece`;
+  }
+  return 'move cursor onto one of your pieces (outlined) and press ↵';
+}
+
 function drawHeader(screen, { record, saveBlip }) {
   const diff = DIFFICULTIES[record.difficulty - 1];
   const left = chalk.hex(C.accent).bold(EMBLEM) + '  ' +
@@ -64,26 +105,42 @@ function drawHeader(screen, { record, saveBlip }) {
   screen.at(2, 3, chalk.hex(C.divider)('─'.repeat(totalWidth)));
 }
 
-function drawFooter(screen, { cursor, selected, status }, rowOffset) {
-  const row = rowOffset;
+function drawFooter(screen, row, { cursor, selected, status, guidance }) {
+  // Row 1: guidance — the primary instructional text.
+  screen.at(row, 3, chalk.hex(C.accent).bold('▸ ') + chalk.hex(C.text)(guidance));
+
+  // Row 2: cursor + selection state.
   const selHint = selected
     ? chalk.hex(C.success)(`selected ${selected.toUpperCase()}`)
     : chalk.hex(C.muted)('no selection');
-  const cursorHint = chalk.hex(C.text)(`cursor ${cursor.toUpperCase()}`);
-  screen.at(row, 3, `${cursorHint}   ·   ${selHint}`);
+  const cursorHint = chalk.hex(C.subtle)(`cursor ${cursor.toUpperCase()}`);
+  screen.at(row + 1, 3, `${cursorHint}   ·   ${selHint}`);
 
+  // Row 3: keybinding reminder (kept short — `?` opens the full list).
   const keys = status?.kind && status.kind !== 'playing'
-    ? '↵ / n  new game   ·   l  library   ·   q  quit'
-    : '← → ↑ ↓  move   ·   ↵  select / move   ·   esc  cancel   ·   u  undo   ·   r  resign   ·   m  menu   ·   q  quit';
-  screen.at(row + 1, 3, chalk.hex(C.muted)(keys));
+    ? '↵ / n  new game   ·   l  library   ·   m  menu   ·   ?  help   ·   q  quit'
+    : '← → ↑ ↓  move  ·  ↵  select / move  ·  u  undo  ·  r  resign  ·  m  menu  ·  l  library  ·  ?  help  ·  q  quit';
+  screen.at(row + 2, 3, chalk.hex(C.muted)(keys));
+}
+
+// Centre the help overlay over the full frame.
+function paintHelpOverlay(screen) {
+  const lines = renderHelpOverlay();
+  const rows = screen.rows;
+  const cols = screen.cols;
+  const top = Math.max(2, Math.floor((rows - lines.length) / 2));
+  for (let i = 0; i < lines.length; i++) {
+    const visible = lines[i].replace(/\u001b\[[0-9;]*m/g, '').length;
+    const left = Math.max(2, Math.floor((cols - visible) / 2));
+    screen.at(top + i, left, lines[i]);
+  }
 }
 
 export async function runGame({ store, record }) {
   const chess = new Chess();
-  // Replay PGN if we're resuming an existing game.
   if (record.pgn) {
     try { chess.loadPgn(record.pgn); }
-    catch { /* corrupt save — start fresh at stored FEN if possible */
+    catch {
       try { chess.load(record.fen); } catch { /* ignore */ }
     }
   }
@@ -93,7 +150,8 @@ export async function runGame({ store, record }) {
 
   let cursor = playerColor === 'w' ? 'e2' : 'e7';
   let selected = null;
-  let legalTargets = new Set();
+  let legalTargets = new Set();   // legal targets of the SELECTED piece
+  let hoverTargets = new Set();   // legal targets of the piece UNDER THE CURSOR
   let lastMove = null;
   let status = evaluateResult(chess, playerColor);
   let thinking = false;
@@ -101,6 +159,7 @@ export async function runGame({ store, record }) {
   let saveBlipTimer = null;
   let shimmer = null;
   let shimmerTimer = null;
+  let helpVisible = false;
   let resolveExit;
 
   const flashSave = () => {
@@ -120,13 +179,24 @@ export async function runGame({ store, record }) {
     flashSave();
   };
 
+  // Recompute hoverTargets whenever the cursor moves (cheap — chess.js
+  // returns at most ~27 moves per square).
+  const refreshHover = () => {
+    if (selected) { hoverTargets = new Set(); return; }
+    const p = chess.get(cursor);
+    if (!p || p.color !== playerColor) { hoverTargets = new Set(); return; }
+    hoverTargets = new Set(
+      chess.moves({ square: cursor, verbose: true }).map((m) => m.to)
+    );
+  };
+
   const draw = () => {
     screen.clear().hideCursor();
     drawHeader(screen, { record, saveBlip });
 
     const checkSquare = chess.inCheck() ? findKingSquare(chess, chess.turn()) : null;
     const boardLines = renderBoard(chess, {
-      cursor, selected, legalTargets, lastMove, checkSquare,
+      cursor, selected, legalTargets, hoverTargets, lastMove, checkSquare,
     });
     const sidebarLines = renderSidebar(chess, {
       difficulty: record.difficulty,
@@ -142,19 +212,26 @@ export async function runGame({ store, record }) {
     screen.block(BOARD_ROW, 2, boardLines);
     screen.block(BOARD_ROW, BOARD_WIDTH + 4, sidebarLines);
 
-    drawFooter(screen, { cursor, selected, status }, BOARD_ROW + 20);
+    // Footer starts immediately below the board (2 file-label rows + 8*SQ_H).
+    const footerRow = BOARD_ROW + BOARD_HEIGHT + 1;
+    const guidance = statusGuidance(chess, {
+      selected, cursor, status, playerColor, thinking,
+    });
+    drawFooter(screen, footerRow, { cursor, selected, status, guidance });
 
-    // Game-over overlay — painted over the top of the footer space.
+    // Game-over banner goes just above the footer.
     if (status?.kind && status.kind !== 'playing') {
-      const banner = ' '.repeat(2) + chalk.hex(C.accent).bold(
-        EMBLEM + '  ' + (status.message ?? status.kind.toUpperCase())
+      const banner = chalk.hex(C.accent).bold(
+        '  ' + EMBLEM + '  ' + (status.message ?? status.kind.toUpperCase())
       );
-      screen.at(BOARD_ROW + 19, 3, banner);
+      screen.at(footerRow - 1, 3, banner);
     }
+
+    if (helpVisible) paintHelpOverlay(screen);
+
     screen.flush();
   };
 
-  // Start / stop the shimmer animation ticker.
   const startShimmer = () => {
     shimmer = createShimmer();
     shimmerTimer = setInterval(() => { shimmer.tick(); draw(); }, 90);
@@ -170,8 +247,10 @@ export async function runGame({ store, record }) {
       legalTargets = new Set(
         chess.moves({ square: sq, verbose: true }).map((m) => m.to)
       );
+      hoverTargets = new Set();   // selection supersedes hover
     } else {
       legalTargets = new Set();
+      refreshHover();
     }
   }
 
@@ -191,7 +270,6 @@ export async function runGame({ store, record }) {
     startShimmer();
     draw();
 
-    // Keep the "thinking" frame visible long enough to read at high depth.
     const minPause = 500 + record.difficulty * 80;
     const started = Date.now();
 
@@ -218,6 +296,7 @@ export async function runGame({ store, record }) {
 
     stopShimmer();
     thinking = false;
+    refreshHover();
     status = evaluateResult(chess, playerColor);
     persist({ result: status.kind === 'playing' ? 'playing' : status.kind });
     draw();
@@ -230,9 +309,13 @@ export async function runGame({ store, record }) {
     const h = chess.history({ verbose: true });
     lastMove = h.length ? { from: h[h.length - 1].from, to: h[h.length - 1].to } : null;
     setSelection(null);
+    refreshHover();
     status = evaluateResult(chess, playerColor);
     persist({ result: status.kind === 'playing' ? 'playing' : status.kind });
   }
+
+  // Initial hover compute.
+  refreshHover();
 
   const input = createInput();
   const handler = async (key) => {
@@ -240,6 +323,21 @@ export async function runGame({ store, record }) {
       persist();
       return resolveExit({ kind: 'quit' });
     }
+
+    // Any key dismisses help first. We still process navigation keys below
+    // only if help wasn't on, so the dismiss feels "free".
+    if (helpVisible) {
+      helpVisible = false;
+      draw();
+      return;
+    }
+
+    if (key.name === '?' || (key.char === '?') || key.name === 'h') {
+      helpVisible = true;
+      draw();
+      return;
+    }
+
     if (thinking) return;
 
     if (key.name === 'q') {
@@ -256,7 +354,6 @@ export async function runGame({ store, record }) {
     }
 
     if (status.kind !== 'playing') {
-      // After game-over, ↵ or `n` starts a new game; anything else ignored.
       if (key.name === 'enter' || key.name === 'space' || key.name === 'n') {
         return resolveExit({ kind: 'newgame' });
       }
@@ -264,10 +361,10 @@ export async function runGame({ store, record }) {
     }
 
     switch (key.name) {
-      case 'up':    cursor = shiftCursor(cursor, 0,  1); draw(); return;
-      case 'down':  cursor = shiftCursor(cursor, 0, -1); draw(); return;
-      case 'left':  cursor = shiftCursor(cursor, -1, 0); draw(); return;
-      case 'right': cursor = shiftCursor(cursor,  1, 0); draw(); return;
+      case 'up':    cursor = shiftCursor(cursor, 0,  1); refreshHover(); draw(); return;
+      case 'down':  cursor = shiftCursor(cursor, 0, -1); refreshHover(); draw(); return;
+      case 'left':  cursor = shiftCursor(cursor, -1, 0); refreshHover(); draw(); return;
+      case 'right': cursor = shiftCursor(cursor,  1, 0); refreshHover(); draw(); return;
       case 'esc':   setSelection(null); draw(); return;
       case 'u':     undoLastPair(); draw(); return;
       case 'n':     persist(); return resolveExit({ kind: 'newgame' });
@@ -320,8 +417,6 @@ export async function runGame({ store, record }) {
     };
     draw();
 
-    // If we loaded a game where it's Claude's turn, kick the engine off
-    // immediately so the player sees the shimmer right away.
     if (status.kind === 'playing' && chess.turn() !== playerColor) {
       claudeMove();
     }
