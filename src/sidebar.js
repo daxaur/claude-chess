@@ -1,128 +1,134 @@
 import chalk from 'chalk';
-import { PIECES, C, DIFFICULTIES } from './theme.js';
+import { PIECES, C, EMBLEM, DIFFICULTIES, sectionHeader, divider } from './theme.js';
 
-// Render the right-side info panel. Returns an array of lines.
-// Width is fixed at SIDEBAR_WIDTH characters.
+// Width of the right-hand panel (in cells). The bin uses this to lay out
+// the frame — if you change it, check the overall terminal-width budget
+// in bin/claude-chess.js.
 export const SIDEBAR_WIDTH = 30;
 
-const PIECE_VALUES = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
+const PIECE_VALUE = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
 
-function line(s = '') {
-  // Pad to SIDEBAR_WIDTH (without counting ANSI).
-  const visible = stripAnsi(s);
-  const pad = Math.max(0, SIDEBAR_WIDTH - visible.length);
-  return s + ' '.repeat(pad);
-}
+const stripAnsi = (s) => s.replace(/\u001b\[[0-9;]*m/g, '');
 
-function stripAnsi(s) {
-  return s.replace(/\u001b\[[0-9;]*m/g, '');
-}
+// Left-pad a string to SIDEBAR_WIDTH without counting ANSI codes.
+const pad = (s = '') => {
+  const visible = stripAnsi(s).length;
+  const n = Math.max(0, SIDEBAR_WIDTH - visible);
+  return s + ' '.repeat(n);
+};
 
-function header(label) {
-  return chalk.hex(C.accent).bold(label);
-}
-
-function divider() {
-  return chalk.hex(C.accentDim)('─'.repeat(SIDEBAR_WIDTH));
-}
-
-// Format captured-piece list and material balance.
+// Group chess.js's move history into plies by captured-piece owner.
 function capturedSummary(chess) {
-  // chess.js history gives us each move, including captured pieces.
   const lost = { w: [], b: [] };
   for (const mv of chess.history({ verbose: true })) {
     if (mv.captured) {
-      // `captured` is the piece type of the piece that got taken;
-      // its color is the opposite of the mover.
       const owner = mv.color === 'w' ? 'b' : 'w';
       lost[owner].push(mv.captured);
     }
   }
   const fmt = (color) =>
-    lost[color]
-      .map((t) => PIECES[color][t])
-      .join(' ') || chalk.hex(C.subtle)('—');
+    lost[color].length === 0
+      ? chalk.hex(C.muted)('—')
+      : lost[color].map((t) => PIECES[color][t]).join(' ');
 
-  const materialBalance = () => {
-    const sum = (arr) => arr.reduce((n, t) => n + PIECE_VALUES[t], 0);
-    const diff = sum(lost.b) - sum(lost.w); // positive = white ahead
-    if (diff === 0) return '';
-    const sign = diff > 0 ? '+' : '';
-    const who = diff > 0 ? 'white' : 'black';
-    return chalk.hex(C.subtle)(` ${sign}${diff} ${who}`);
-  };
+  const sum = (arr) => arr.reduce((n, t) => n + PIECE_VALUE[t], 0);
+  const diff = sum(lost.b) - sum(lost.w);
+  const balance = diff === 0
+    ? ''
+    : chalk.hex(C.subtle)(` ${diff > 0 ? '+' : ''}${diff}`);
 
   return {
-    whiteTook: chalk.hex(C.whitePiece).bold(fmt('b')),
-    blackTook: chalk.hex(C.blackPiece).bold(fmt('w')),
-    balance:   materialBalance(),
+    white: chalk.hex(C.whitePiece).bold(fmt('b')),
+    black: chalk.hex(C.accent).bold(fmt('w')),
+    balance,
   };
 }
 
-// Format move history into two-column SAN lines: "  1. e4     e5"
-function moveHistoryLines(chess, maxLines) {
-  const history = chess.history();
+// Move history rendered as two-column SAN lines: "  1.  e4      e5"
+function moveHistoryLines(chess, max) {
+  const hist = chess.history();
   const rows = [];
-  for (let i = 0; i < history.length; i += 2) {
-    const n = (i / 2 + 1).toString().padStart(2, ' ');
-    const white = (history[i] ?? '').padEnd(7);
-    const black = (history[i + 1] ?? '').padEnd(7);
+  for (let i = 0; i < hist.length; i += 2) {
+    const num = (i / 2 + 1).toString().padStart(2, ' ');
+    const w = (hist[i] ?? '').padEnd(7);
+    const b = (hist[i + 1] ?? '').padEnd(7);
     rows.push(
-      chalk.hex(C.subtle)(`${n}. `) +
-      chalk.hex(C.text)(white) +
-      chalk.hex(C.text)(black)
+      chalk.hex(C.muted)(`${num}.  `) +
+      chalk.hex(C.text)(w) +
+      chalk.hex(C.accentSoft)(b)
     );
   }
-  // Keep only the last maxLines rows so the sidebar stays bounded.
-  return rows.slice(-maxLines);
+  return rows.slice(-max);
 }
 
-export function renderSidebar(chess, { difficulty, thinking, status, playerColor }) {
+export function renderSidebar(chess, {
+  difficulty,
+  thinking,
+  spinnerFrame,
+  status,
+  playerColor,
+  gameId,
+  autosaved,
+}) {
   const diff = DIFFICULTIES[difficulty - 1];
-  const turn = chess.turn() === 'w' ? 'white' : 'black';
-  const { whiteTook, blackTook, balance } = capturedSummary(chess);
+  const captured = capturedSummary(chess);
+  const turn = chess.turn();
 
   const lines = [];
-  lines.push(line(header('OPPONENT')));
-  lines.push(line(
-    chalk.hex(C.accent).bold('  ♚ Claude  ') +
-    chalk.hex(C.subtle)(`Lv.${difficulty} ${diff.label}`)
+
+  // Opponent card.
+  lines.push(pad(sectionHeader('opponent')));
+  lines.push(pad(
+    ' ' + chalk.hex(C.accent).bold(EMBLEM) +
+    ' ' + chalk.hex(C.text).bold('Claude')
   ));
-  lines.push(line(chalk.hex(C.subtle)('  ' + diff.hint)));
+  lines.push(pad(
+    ' ' + chalk.hex(C.subtle)(`Lv.${difficulty} · ${diff.label}`)
+  ));
+  lines.push(pad(' ' + chalk.hex(C.muted)(diff.hint)));
   lines.push('');
-  lines.push(line(divider()));
-  lines.push('');
-
-  lines.push(line(header('TURN')));
-  const turnMark = thinking
-    ? chalk.hex(C.accent).bold('  Claude is thinking…')
-    : turn === playerColor
-      ? chalk.hex(C.success).bold('  Your move')
-      : chalk.hex(C.accent).bold('  Claude’s move');
-  lines.push(line(turnMark));
-  if (chess.inCheck())
-    lines.push(line(chalk.hex(C.danger).bold('  ⚠  CHECK')));
+  lines.push(pad(divider(SIDEBAR_WIDTH - 1)));
   lines.push('');
 
-  lines.push(line(header('CAPTURED')));
-  lines.push(line(chalk.hex(C.subtle)('  white took  ') + whiteTook));
-  lines.push(line(chalk.hex(C.subtle)('  black took  ') + blackTook));
-  if (balance) lines.push(line('  material' + balance));
-  lines.push('');
-
-  lines.push(line(header('MOVES')));
-  const moves = moveHistoryLines(chess, 10);
-  if (moves.length === 0) {
-    lines.push(line(chalk.hex(C.subtle)('  (no moves yet)')));
+  // Turn indicator — either "your move", or the shimmer while Claude thinks.
+  lines.push(pad(sectionHeader('turn')));
+  if (thinking) {
+    lines.push(pad(' ' + chalk.hex(C.accent).bold('Claude is thinking')));
+    lines.push(pad(' ' + (spinnerFrame ?? '')));
+  } else if (status?.kind && status.kind !== 'playing') {
+    lines.push(pad(' ' + chalk.hex(C.danger).bold('game over')));
+    lines.push(pad(' ' + chalk.hex(C.subtle)(status.message ?? status.kind)));
+  } else if (turn === playerColor) {
+    lines.push(pad(' ' + chalk.hex(C.success).bold('your move')));
+    if (chess.inCheck())
+      lines.push(pad(' ' + chalk.hex(C.danger).bold('⚠  you are in check')));
+    else
+      lines.push(pad(''));
   } else {
-    for (const row of moves) lines.push(line('  ' + row));
+    lines.push(pad(' ' + chalk.hex(C.accent).bold('Claude to move')));
+    lines.push(pad(''));
   }
+  lines.push('');
+  lines.push(pad(divider(SIDEBAR_WIDTH - 1)));
+  lines.push('');
 
-  // Pad status at the bottom if present (checkmate etc.)
-  if (status?.kind && status.kind !== 'playing') {
-    lines.push('');
-    lines.push(line(divider()));
-    lines.push(line(chalk.hex(C.danger).bold('  ' + (status.message ?? status.kind.toUpperCase()))));
+  // Captured + material balance.
+  lines.push(pad(sectionHeader('captured')));
+  lines.push(pad(' ' + chalk.hex(C.subtle)('you       ') + captured.white));
+  lines.push(pad(' ' + chalk.hex(C.subtle)('Claude    ') + captured.black));
+  if (captured.balance)
+    lines.push(pad(' ' + chalk.hex(C.subtle)('material ') + captured.balance));
+  lines.push('');
+  lines.push(pad(divider(SIDEBAR_WIDTH - 1)));
+  lines.push('');
+
+  // Move history (last 8 rows of the ledger).
+  lines.push(pad(sectionHeader('moves')));
+  const moves = moveHistoryLines(chess, 8);
+  if (moves.length === 0) {
+    lines.push(pad(' ' + chalk.hex(C.muted)('no moves yet')));
+  } else {
+    for (const row of moves) lines.push(pad(' ' + row));
   }
 
   return lines;
