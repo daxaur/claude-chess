@@ -56,19 +56,43 @@ npm install -g .
 claude-chess
 ```
 
-## Use as a Claude Code plugin
+## Use with Claude Code
 
-Symlink the repo into your plugins directory:
+### Personal install (quickest — gives you `/chess` in any session)
 
 ```bash
-ln -s "$(pwd)" ~/.claude/plugins/claude-chess
+mkdir -p ~/.claude/commands
+cp commands/chess.md ~/.claude/commands/chess.md
 ```
 
-Then inside Claude Code, run:
+Then open Claude Code and type:
 
 ```
 /chess
 ```
+
+No namespace, no plugin manager, just `/chess`. The command invokes the launcher under the hood.
+
+### Plugin install (for sharing / teams)
+
+Register this repo as a plugin marketplace, then install:
+
+```bash
+# Inside Claude Code:
+/plugin marketplace add daxaur/claude-chess
+/plugin install claude-chess@claude-chess
+/reload-plugins
+```
+
+Skills are namespaced when installed as a plugin: `/claude-chess:chess`.
+
+### Dev mode (one-off testing)
+
+```bash
+claude --plugin-dir ~/claude-chess
+```
+
+Then `/claude-chess:chess` is available for that session only.
 
 ### How the integration actually works
 

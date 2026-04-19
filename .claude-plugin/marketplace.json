@@ -1,0 +1,15 @@
+{
+  "name": "claude-chess",
+  "description": "Terminal chess against Claude — tmux-integrated TUI with persistence, difficulty levels, and shimmer animations.",
+  "owner": {
+    "name": "daxaur",
+    "url": "https://github.com/daxaur"
+  },
+  "plugins": [
+    {
+      "name": "claude-chess",
+      "description": "Play chess against Claude while you code. Splits your tmux pane or opens a new window — auto-saves every move.",
+      "source": "./"
+    }
+  ]
+}
